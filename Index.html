@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subir Archivos a Google Drive</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+    h1, h2 {
+      color: #4285f4;
+      margin-top: 0;
+    }
+    .upload-area {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      margin: 20px 0;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .upload-area:hover, .upload-area.dragover {
+      border-color: #4285f4;
+      background-color: rgba(66, 133, 244, 0.05);
+    }
+    .upload-area p {
+      margin: 0;
+      font-size: 16px;
+      color: #666;
+    }
+    .file-input {
+      display: none;
+    }
+    .btn {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-top: 10px;
+      margin-right: 10px;
+    }
+    .btn:hover {
+      background-color: #3367d6;
+    }
+    .btn:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    .btn-warning {
+      background-color: #fbbc05;
+    }
+    .btn-warning:hover {
+      background-color: #f9a825;
+    }
+    .btn-danger {
+      background-color: #ea4335;
+    }
+    .btn-danger:hover {
+      background-color: #d32f2f;
+    }
+    .progress-container {
+      margin-top: 20px;
+      display: none;
+    }
+    .progress-bar {
+      height: 10px;
+      background-color: #e0e0e0;
+      border-radius: 5px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .progress {
+      height: 100%;
+      background-color: #4285f4;
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .status {
+      font-size: 14px;
+      color: #666;
+    }
+    .file-list {
+      margin-top: 30px;
+    }
+    .file-list h2 {
+      color: #333;
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .file-icon {
+      margin-right: 10px;
+      color: #4285f4;
+    }
+    .file-name {
+      flex-grow: 1;
+      font-weight: bold;
+    }
+    .file-size {
+      color: #666;
+      margin-right: 10px;
+    }
+    .error {
+      color: #d93025;
+      margin-top: 10px;
+    }
+    .success {
+      color: #0f9d58;
+      margin-top: 10px;
+    }
+    .warning {
+      color: #fbbc05;
+      margin-top: 10px;
+    }
+    .pending-uploads {
+      margin-top: 20px;
+      border-top: 1px solid #eee;
+      padding-top: 20px;
+    }
+    .pending-upload-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid #eee;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    .pending-upload-info {
+      flex-grow: 1;
+    }
+    .pending-upload-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 20px;
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active {
+      border-bottom-color: #4285f4;
+      color: #4285f4;
+      font-weight: bold;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Subir Archivos a Google Drive</h1>
+    <div id="folder-info"></div>
+    
+    <div class="tabs">
+      <div class="tab active" data-tab="upload">Subir archivos</div>
+      <div class="tab" data-tab="pending">Subidas pendientes</div>
+      <div class="tab" data-tab="files">Archivos en carpeta</div>
+    </div>
+    
+    <div id="upload-tab" class="tab-content active">
+      <div id="upload-area" class="upload-area">
+        <p>Arrastra y suelta archivos aquí o haz clic para seleccionar</p>
+        <input type="file" id="file-input" class="file-input" multiple>
+        <button id="select-files-btn" class="btn">Seleccionar archivos</button>
+      </div>
+      
+      <div id="selected-files"></div>
+      <button id="upload-btn" class="btn" disabled>Subir archivos</button>
+      
+      <!-- Añadir un indicador de intentos de reanudación automática en la interfaz -->
+      <div id="progress-container" class="progress-container">
+        <div class="progress-bar">
+          <div id="progress" class="progress"></div>
+        </div>
+        <div id="status" class="status">Preparando para subir...</div>
+        <div id="auto-resume-status" style="font-size: 12px; color: #666; margin-top: 5px;"></div>
+        <div id="upload-actions" style="display: none; margin-top: 10px;">
+          <button id="resume-btn" class="btn btn-warning">Reanudar subida</button>
+          <button id="cancel-btn" class="btn btn-danger">Cancelar subida</button>
+        </div>
+      </div>
+      
+      <div id="message"></div>
+    </div>
+    
+    <div id="pending-tab" class="tab-content">
+      <h2>Subidas pendientes</h2>
+      <div id="pending-uploads"></div>
+    </div>
+    
+    <div id="files-tab" class="tab-content">
+      <h2>Archivos en la carpeta</h2>
+      <div id="files"></div>
+    </div>
+  </div>
+
+  <script>
+    // Variables globales
+    let selectedFiles = [];
+    const CHUNK_SIZE = 15 * 1024 * 1024; // 15MB por fragmento (debe coincidir con el servidor)
+    const SMALL_FILE_THRESHOLD = 40 * 1024 * 1024; // 40MB - umbral para subida directa
+    let currentUploadId = null;
+    let currentFileName = null;
+    let currentFileObject = null;
+    let currentTotalChunks = 0;
+    let currentChunkIndex = 0;
+    let isUploading = false;
+    let autoResumeEnabled = true; // Habilitar reanudación automática por defecto
+    let autoResumeAttempts = 0;
+    const MAX_AUTO_RESUME_ATTEMPTS = 50;
+    const AUTO_RESUME_DELAY = 3000; // 3 segundos de espera antes de reanudar
+    
+    // Elementos DOM
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+    const selectFilesBtn = document.getElementById('select-files-btn');
+    const uploadBtn = document.getElementById('upload-btn');
+    const selectedFilesDiv = document.getElementById('selected-files');
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress');
+    const statusDiv = document.getElementById('status');
+    const messageDiv = document.getElementById('message');
+    const folderInfoDiv = document.getElementById('folder-info');
+    const filesDiv = document.getElementById('files');
+    const pendingUploadsDiv = document.getElementById('pending-uploads');
+    const uploadActionsDiv = document.getElementById('upload-actions');
+    const resumeBtn = document.getElementById('resume-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
+    const autoResumeStatusDiv = document.getElementById('auto-resume-status');
+    
+    // Inicialización
+    window.onload = function() {
+      // Verificar acceso a la carpeta
+      google.script.run
+        .withSuccessHandler(handleFolderAccess)
+        .withFailureHandler(handleError)
+        .checkFolderAccess();
+      
+      // Cargar la lista de archivos
+      loadFilesList();
+      
+      // Cargar subidas pendientes
+      loadPendingUploads();
+      
+      // Configurar pestañas
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          // Desactivar todas las pestañas
+          tabs.forEach(t => t.classList.remove('active'));
+          tabContents.forEach(c => c.classList.remove('active'));
+          
+          // Activar la pestaña seleccionada
+          tab.classList.add('active');
+          const tabId = tab.getAttribute('data-tab');
+          document.getElementById(tabId + '-tab').classList.add('active');
+          
+          // Actualizar contenido según la pestaña
+          if (tabId === 'files') {
+            loadFilesList();
+          } else if (tabId === 'pending') {
+            loadPendingUploads();
+          }
+        });
+      });
+    
+    // Añadir opción para activar/desactivar reanudación automática
+    const settingsDiv = document.createElement('div');
+    settingsDiv.className = 'settings';
+    settingsDiv.style.marginTop = '20px';
+    settingsDiv.style.padding = '10px';
+    settingsDiv.style.backgroundColor = '#f9f9f9';
+    settingsDiv.style.borderRadius = '4px';
+    
+    const autoResumeCheckbox = document.createElement('input');
+    autoResumeCheckbox.type = 'checkbox';
+    autoResumeCheckbox.id = 'auto-resume-checkbox';
+    autoResumeCheckbox.checked = autoResumeEnabled;
+    
+    const autoResumeLabel = document.createElement('label');
+    autoResumeLabel.htmlFor = 'auto-resume-checkbox';
+    autoResumeLabel.textContent = ' Reanudar automáticamente las subidas interrumpidas';
+    
+    autoResumeCheckbox.addEventListener('change', function() {
+      autoResumeEnabled = this.checked;
+    });
+    
+    settingsDiv.appendChild(autoResumeCheckbox);
+    settingsDiv.appendChild(autoResumeLabel);
+    
+    document.getElementById('upload-tab').insertBefore(settingsDiv, document.getElementById('upload-area'));
+  };
+  
+  // Manejar el acceso a la carpeta
+  function handleFolderAccess(result) {
+    if (result && result.status === 'success') {
+      folderInfoDiv.innerHTML = `
+        <p>Subiendo archivos a la carpeta: 
+          <a href="${result.folderUrl}" target="_blank">${result.folderName}</a>
+        </p>
+      `;
+    } else {
+      const errorMsg = result && result.message ? result.message : 'Error desconocido al acceder a la carpeta';
+      folderInfoDiv.innerHTML = `<p class="error">${errorMsg}</p>`;
+      uploadArea.style.display = 'none';
+      uploadBtn.style.display = 'none';
+    }
+  }
+  
+  // Cargar la lista de archivos
+  function loadFilesList() {
+    filesDiv.innerHTML = '<p>Cargando archivos...</p>';
+    google.script.run
+      .withSuccessHandler(displayFiles)
+      .withFailureHandler(handleError)
+      .getFilesList();
+  }
+  
+  // Cargar subidas pendientes
+  function loadPendingUploads() {
+    pendingUploadsDiv.innerHTML = '<p>Cargando subidas pendientes...</p>';
+    google.script.run
+      .withSuccessHandler(displayPendingUploads)
+      .withFailureHandler(handleError)
+      .getPendingUploads();
+  }
+  
+  // Mostrar subidas pendientes
+  function displayPendingUploads(result) {
+    if (!result) {
+      pendingUploadsDiv.innerHTML = '<p class="error">Error al cargar subidas pendientes</p>';
+      return;
+    }
+    
+    if (result.status === 'success') {
+      if (!result.pendingUploads || result.pendingUploads.length === 0) {
+        pendingUploadsDiv.innerHTML = '<p>No hay subidas pendientes</p>';
+        return;
+      }
+      
+      let html = '';
+      result.pendingUploads.forEach(upload => {
+        html += `
+          <div class="pending-upload-item">
+            <div class="pending-upload-info">
+              <div><strong>${upload.fileName}</strong></div>
+              <div>Progreso: ${upload.percentComplete}% (${upload.nextChunk} de ${upload.totalChunks} fragmentos)</div>
+            </div>
+            <div class="pending-upload-actions">
+              <button class="btn btn-warning resume-upload-btn" data-upload-id="${upload.uploadId}" data-file-name="${upload.fileName}">
+                Reanudar
+              </button>
+              <button class="btn btn-danger cancel-upload-btn" data-upload-id="${upload.uploadId}" data-file-name="${upload.fileName}">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        `;
+      });
+      pendingUploadsDiv.innerHTML = html;
+      
+      // Añadir eventos a los botones
+      document.querySelectorAll('.resume-upload-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+          const uploadId = this.getAttribute('data-upload-id');
+          const fileName = this.getAttribute('data-file-name');
+          resumeUpload(uploadId, fileName);
+        });
+      });
+      
+      document.querySelectorAll('.cancel-upload-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+          const uploadId = this.getAttribute('data-upload-id');
+          const fileName = this.getAttribute('data-file-name');
+          if (confirm(`¿Estás seguro de que deseas cancelar la subida de "${fileName}"?`)) {
+            cancelPendingUpload(uploadId);
+          }
+        });
+      });
+    } else {
+      const errorMsg = result.message || 'Error desconocido al cargar subidas pendientes';
+      pendingUploadsDiv.innerHTML = `<p class="error">${errorMsg}</p>`;
+    }
+  }
+  
+  // Reanudar una subida pendiente desde la lista
+  function resumeUpload(uploadId, fileName) {
+    // Cambiar a la pestaña de subida
+    tabs[0].click();
+    
+    // Mostrar mensaje
+    messageDiv.innerHTML = `<p class="warning">Preparando para reanudar la subida de "${fileName}"...</p>`;
+    
+    // Inicializar la reanudación
+    google.script.run
+      .withSuccessHandler(handleResumeUpload)
+      .withFailureHandler(handleError)
+      .initOrResumeChunkedUpload({
+        resumeUploadId: uploadId
+      });
+  }
+  
+  // Cancelar una subida pendiente
+  function cancelPendingUpload(uploadId) {
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.status === 'success') {
+          messageDiv.innerHTML = `<p class="success">${result.message}</p>`;
+          loadPendingUploads();
+        } else {
+          messageDiv.innerHTML = `<p class="error">${result.message}</p>`;
+        }
+      })
+      .withFailureHandler(handleError)
+      .cancelUpload({
+        uploadId: uploadId
+      });
+  }
+  
+  // Mostrar la lista de archivos
+  function displayFiles(result) {
+    // Verificar que result no sea null o undefined
+    if (!result) {
+      filesDiv.innerHTML = '<p class="error">Error: No se pudo obtener la lista de archivos</p>';
+      return;
+    }
+    
+    if (result.status === 'success') {
+      if (!result.files || result.files.length === 0) {
+        filesDiv.innerHTML = '<p>No hay archivos en esta carpeta.</p>';
+        return;
+      }
+      
+      let html = '';
+      result.files.forEach(file => {
+        const fileSize = formatFileSize(file.size);
+        const fileDate = new Date(file.date).toLocaleString();
+        html += `
+          <div class="file-item">
+            <div class="file-icon">📄</div>
+            <div class="file-name">
+              <a href="${file.url}" target="_blank">${file.name}</a>
+            </div>
+            <div class="file-size">${fileSize}</div>
+            <div class="file-date">${fileDate}</div>
+          </div>
+        `;
+      });
+      filesDiv.innerHTML = html;
+    } else {
+      const errorMsg = result.message || 'Error desconocido al obtener la lista de archivos';
+      filesDiv.innerHTML = `<p class="error">${errorMsg}</p>`;
+    }
+  }
+  
+  // Formatear el tamaño del archivo
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    else if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    else return (bytes / 1073741824).toFixed(1) + ' GB';
+  }
+  
+  // Eventos para arrastrar y soltar
+  uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+  });
+  
+  uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+  });
+  
+  uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    handleFiles(e.dataTransfer.files);
+  });
+  
+  // Evento para seleccionar archivos con el botón
+  selectFilesBtn.addEventListener('click', () => {
+    fileInput.click();
+  });
+  
+  fileInput.addEventListener('change', () => {
+    handleFiles(fileInput.files);
+  });
+  
+  // Manejar los archivos seleccionados
+  function handleFiles(files) {
+    selectedFiles = Array.from(files);
+    
+    if (selectedFiles.length > 0) {
+      let html = '<p>Archivos seleccionados:</p><ul>';
+      selectedFiles.forEach(file => {
+        html += `<li>${file.name} (${formatFileSize(file.size)})</li>`;
+      });
+      html += '</ul>';
+      selectedFilesDiv.innerHTML = html;
+      uploadBtn.disabled = false;
+      
+      // Si estamos reanudando una subida, verificar si el archivo seleccionado coincide
+      if (currentUploadId && currentFileName) {
+        const matchingFile = selectedFiles.find(file => file.name === currentFileName);
+        if (matchingFile) {
+          currentFileObject = matchingFile;
+          messageDiv.innerHTML = `<p class="success">Archivo "${currentFileName}" seleccionado. Puedes reanudar la subida.</p>`;
+          resumeBtn.disabled = false;
+        } else {
+          messageDiv.innerHTML = `<p class="error">El archivo seleccionado no coincide con "${currentFileName}". Por favor, selecciona el archivo correcto.</p>`;
+          resumeBtn.disabled = true;
+        }
+      }
+    } else {
+      selectedFilesDiv.innerHTML = '';
+      uploadBtn.disabled = true;
+    }
+  }
+  
+  // Evento para iniciar la subida
+  uploadBtn.addEventListener('click', async () => {
+    if (selectedFiles.length === 0) return;
+    
+    uploadBtn.disabled = true;
+    progressContainer.style.display = 'block';
+    messageDiv.innerHTML = '';
+    isUploading = true;
+    
+    // Procesar cada archivo
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      statusDiv.textContent = `Preparando ${file.name}...`;
+      
+      try {
+        // Usar método diferente según el tamaño del archivo
+        if (file.size <= SMALL_FILE_THRESHOLD) {
+          await uploadSmallFile(file);
+        } else {
+          await uploadLargeFile(file);
+        }
+        
+        // Si es el último archivo, mostrar mensaje de éxito
+        if (i === selectedFiles.length - 1) {
+          messageDiv.innerHTML = '<p class="success">Todos los archivos han sido subidos correctamente.</p>';
+          // Esperar un momento antes de actualizar la lista de archivos
+          setTimeout(() => {
+            loadFilesList();
+          }, 1000);
+        }
+      } catch (error) {
+        if (error === 'timeout') {
+          // La subida se interrumpió por tiempo, pero podemos reanudarla
+          uploadActionsDiv.style.display = 'block';
+          messageDiv.innerHTML = `<p class="warning">La subida de "${file.name}" se ha interrumpido debido al límite de tiempo. Puedes reanudarla haciendo clic en el botón "Reanudar subida".</p>`;
+          break;
+        } else {
+          messageDiv.innerHTML = `<p class="error">Error al subir ${file.name}: ${error}</p>`;
+          break;
+        }
+      }
+    }
+    
+    isUploading = false;
+    
+    // Resetear el estado si no hubo interrupciones
+    if (!uploadActionsDiv.style.display || uploadActionsDiv.style.display === 'none') {
+      selectedFiles = [];
+      selectedFilesDiv.innerHTML = '';
+      uploadBtn.disabled = true;
+    }
+  });
+  
+  // Función para subir archivos grandes en fragmentos
+  async function uploadLargeFile(file) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const fileName = file.name;
+        const contentType = file.type || 'application/octet-stream';
+        const fileSize = file.size;
+        const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+        
+        // Inicializar la subida
+        statusDiv.textContent = `Inicializando subida para ${fileName}...`;
+        
+        const initResult = await new Promise((resolveInit, rejectInit) => {
+          google.script.run
+            .withSuccessHandler(resolveInit)
+            .withFailureHandler(rejectInit)
+            .initOrResumeChunkedUpload({
+              fileName: fileName,
+              contentType: contentType,
+              fileSize: fileSize
+            });
+        });
+        
+        if (initResult.status !== 'success') {
+          throw new Error(initResult.message || 'Error al inicializar la subida');
+        }
+        
+        const uploadId = initResult.uploadId;
+        currentUploadId = uploadId;
+        currentFileName = fileName;
+        currentFileObject = file;
+        currentTotalChunks = totalChunks;
+        
+        // Subir cada fragmento
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+          currentChunkIndex = chunkIndex;
+          
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, fileSize);
+          const chunk = file.slice(start, end);
+          
+          // Actualizar la interfaz de usuario
+          statusDiv.textContent = `Subiendo ${fileName}: fragmento ${chunkIndex + 1} de ${totalChunks}`;
+          progressBar.style.width = `${Math.round((chunkIndex / totalChunks) * 100)}%`;
+          
+          // Leer el fragmento como base64
+          const base64Data = await readFileAsBase64(chunk);
+          
+          // Subir el fragmento
+          const result = await new Promise((resolveChunk, rejectChunk) => {
+            google.script.run
+              .withSuccessHandler(resolveChunk)
+              .withFailureHandler(rejectChunk)
+              .uploadChunk({
+                bytes: base64Data,
+                uploadId: uploadId,
+                chunkIndex: chunkIndex,
+                totalChunks: totalChunks
+              });
+          });
+          
+          if (result.status === 'error') {
+            // Si hay un error de secuencia, intentar con el fragmento correcto
+            if (result.expectedChunk !== undefined) {
+              chunkIndex = result.expectedChunk - 1; // Restar 1 porque el bucle incrementará en la siguiente iteración
+              continue;
+            }
+            throw new Error(result.message || 'Error al subir fragmento');
+          }
+          
+          if (result.status === 'auto-resume') {
+            // Esperar un momento antes de reanudar automáticamente (evitar bucles muy rápidos)
+            statusDiv.textContent = `Reanudando automáticamente la subida de ${fileName}...`;
+            progressBar.style.width = `${result.percentComplete}%`;
+            messageDiv.innerHTML = `<p>La subida se pausó brevemente. Ya se ha reanudado. Intento ${result.autoResumeAttempts}</p>`;
+            
+            // Esperar un poco para dar tiempo al servidor
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Reanudar automáticamente desde el último fragmento
+            const resumeResult = await new Promise((resolveResume, rejectResume) => {
+              google.script.run
+                .withSuccessHandler(resolveResume)
+                .withFailureHandler(rejectResume)
+                .uploadChunk({
+                  bytes: base64Data,
+                  uploadId: result.uploadId,
+                  chunkIndex: result.nextChunk,
+                  totalChunks: result.totalChunks,
+                  isAutoResume: true
+                });
+            });
+            
+            // Procesar el resultado de la reanudación automática
+            if (resumeResult.status === 'complete') {
+              statusDiv.textContent = `${fileName} subido correctamente`;
+              progressBar.style.width = '100%';
+              resolve(resumeResult);
+              break;
+            }
+          }
+          
+          if (result.status === 'auto-combine') {
+            statusDiv.textContent = `Finalizando subida de ${result.fileName}...`;
+            progressBar.style.width = '99%';
+            messageDiv.innerHTML = `<p>Combinando fragmentos automáticamente. Intento ${result.combineAttempts + 1}</p>`;
+            
+            // Esperar un poco para dar tiempo al servidor
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Reanudar la combinación automáticamente
+            const combineResult = await new Promise((resolveCombine, rejectCombine) => {
+              google.script.run
+                .withSuccessHandler(resolveCombine)
+                .withFailureHandler(rejectCombine)
+                .combineChunks(result.uploadId, false, true);
+            });
+            
+            if (combineResult.status === 'complete') {
+              statusDiv.textContent = `${result.fileName} subido correctamente`;
+              progressBar.style.width = '100%';
+              resolve(combineResult);
+              break;
+            }
+          }
+          
+          // Actualizar la barra de progreso
+          progressBar.style.width = `${result.percentComplete}%`;
+          
+          // Si se completó la subida
+          if (result.status === 'complete') {
+            statusDiv.textContent = `${fileName} subido correctamente`;
+            currentUploadId = null;
+            currentFileName = null;
+            currentFileObject = null;
+            currentChunkIndex = 0;
+            currentTotalChunks = 0;
+            autoResumeAttempts = 0;
+            autoResumeStatusDiv.textContent = '';
+            resolve(result);
+            break;
+          }
+        }
+        
+      } catch (error) {
+        autoResumeStatusDiv.textContent = '';
+        reject(error);
+      }
+    });
+  }
+  
+  // Función para reanudar una subida en fragmentos
+  async function resumeChunkedUpload(file, uploadId, startChunkIndex, isResumingManually = false) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const fileName = file.name;
+        const fileSize = file.size;
+        const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+        
+        // Obtener información actualizada de la subida
+        const resumeInfo = await new Promise((resolveResume, rejectResume) => {
+          google.script.run
+            .withSuccessHandler(resolveResume)
+            .withFailureHandler(rejectResume)
+            .initOrResumeChunkedUpload({
+              resumeUploadId: uploadId
+            });
+        });
+        
+        if (resumeInfo.status === 'error') {
+          throw new Error(resumeInfo.message || 'Error al reanudar la subida');
+        }
+        
+        // Usar el índice de fragmento del servidor, que es más confiable
+        startChunkIndex = resumeInfo.nextChunk;
+        
+        // Subir cada fragmento a partir del índice de inicio
+        for (let chunkIndex = startChunkIndex; chunkIndex < totalChunks; chunkIndex++) {
+          currentChunkIndex = chunkIndex;
+          
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, fileSize);
+          const chunk = file.slice(start, end);
+          
+          // Actualizar la interfaz de usuario
+          statusDiv.textContent = `Subiendo ${fileName}: fragmento ${chunkIndex + 1} de ${totalChunks}`;
+          progressBar.style.width = `${Math.round((chunkIndex / totalChunks) * 100)}%`;
+          
+          // Leer el fragmento como base64
+          const base64Data = await readFileAsBase64(chunk);
+          
+          // Subir el fragmento
+          const result = await new Promise((resolveChunk, rejectChunk) => {
+            google.script.run
+              .withSuccessHandler(resolveChunk)
+              .withFailureHandler(rejectChunk)
+              .uploadChunk({
+                bytes: base64Data,
+                uploadId: uploadId,
+                chunkIndex: chunkIndex,
+                totalChunks: totalChunks,
+                isResumingManually: isResumingManually
+              });
+          });
+          
+          if (result.status === 'error') {
+            // Si hay un error de secuencia, intentar con el fragmento correcto
+            if (result.expectedChunk !== undefined) {
+              chunkIndex = result.expectedChunk - 1; // Restar 1 porque el bucle incrementará en la siguiente iteración
+              continue;
+            }
+            throw new Error(result.message || 'Error al subir fragmento');
+          }
+          
+          // Si se alcanzó el límite de tiempo
+          if (result.status === 'timeout') {
+            if (autoResumeEnabled && autoResumeAttempts < MAX_AUTO_RESUME_ATTEMPTS) {
+              // Preparar para reanudación automática
+              statusDiv.textContent = `Preparando para reanudar automáticamente en ${AUTO_RESUME_DELAY/1000} segundos...`;
+              messageDiv.innerHTML = `<p class="warning">La subida se interrumpió. Reanudando automáticamente...</p>`;
+              autoResumeStatusDiv.textContent = `Intento de reanudación automática: ${autoResumeAttempts + 1} de ${MAX_AUTO_RESUME_ATTEMPTS}`;
+              
+              // Esperar un momento antes de reanudar
+              await new Promise(resolve => setTimeout(resolve, AUTO_RESUME_DELAY));
+              
+              // Incrementar contador de intentos
+              autoResumeAttempts++;
+              
+              // Reanudar desde el último fragmento exitoso
+              const resumeResult = await resumeChunkedUpload(file, uploadId, result.nextChunk);
+              
+              if (resumeResult.status === 'complete') {
+                statusDiv.textContent = `${fileName} subido correctamente`;
+                progressBar.style.width = '100%';
+                autoResumeStatusDiv.textContent = '';
+                resolve(resumeResult);
+                return;
+              }
+            } else {
+              // Si no está habilitada la reanudación automática o se excedieron los intentos
+              uploadActionsDiv.style.display = 'block';
+              autoResumeStatusDiv.textContent = '';
+              throw 'timeout';
+            }
+          }
+          
+          // Actualizar la barra de progreso
+          progressBar.style.width = `${result.percentComplete}%`;
+          
+          // Si se completó la subida
+          if (result.status === 'complete') {
+            statusDiv.textContent = `${fileName} subido correctamente`;
+            autoResumeAttempts = 0;
+            autoResumeStatusDiv.textContent = '';
+            resolve(result);
+            break;
+          }
+        }
+        
+      } catch (error) {
+        autoResumeStatusDiv.textContent = '';
+        reject(error);
+      }
+    });
+  }
+  
+  // Manejar la respuesta de reanudación
+  function handleResumeUpload(result) {
+    if (result.status === 'resume' || result.status === 'success') {
+      // Mostrar la interfaz de progreso
+      progressContainer.style.display = 'block';
+      uploadActionsDiv.style.display = 'block';
+      
+      // Configurar variables globales
+      currentUploadId = result.uploadId;
+      currentFileName = result.fileName;
+      currentChunkIndex = result.nextChunk;
+      currentTotalChunks = result.totalChunks;
+      
+      // Actualizar la interfaz
+      statusDiv.textContent = `Reanudando subida de "${currentFileName}" desde el fragmento ${currentChunkIndex + 1} de ${currentTotalChunks}`;
+      progressBar.style.width = `${Math.round((currentChunkIndex / currentTotalChunks) * 100)}%`;
+      
+      // Mostrar mensaje
+      messageDiv.innerHTML = `<p class="warning">Para continuar con la subida, necesitas seleccionar el mismo archivo "${currentFileName}" que estabas subiendo anteriormente.</p>`;
+      
+      // Solicitar al usuario que seleccione el archivo
+      fileInput.click();
+    } else {
+      messageDiv.innerHTML = `<p class="error">${result.message || 'Error al reanudar la subida'}</p>`;
+    }
+  }
+  
+  // Evento para reanudar la subida
+  resumeBtn.addEventListener('click', async () => {
+    if (!currentUploadId || !currentFileObject) return;
+    
+    try {
+      uploadActionsDiv.style.display = 'none';
+      messageDiv.innerHTML = '';
+      isUploading = true;
+      autoResumeAttempts = 0;
+      
+      // Reanudar la subida desde el fragmento actual
+      await resumeChunkedUpload(currentFileObject, currentUploadId, currentChunkIndex, true);
+      
+      // Subida completada con éxito
+      messageDiv.innerHTML = '<p class="success">Archivo subido correctamente.</p>';
+      setTimeout(() => {
+        loadFilesList();
+      }, 1000);
+      
+      // Resetear el estado
+      currentUploadId = null;
+      currentFileName = null;
+      currentFileObject = null;
+      currentChunkIndex = 0;
+      currentTotalChunks = 0;
+      selectedFiles = [];
+      selectedFilesDiv.innerHTML = '';
+      uploadBtn.disabled = true;
+      
+    } catch (error) {
+      if (error === 'timeout') {
+        // La subida se interrumpió por tiempo, pero podemos reanudarla
+        uploadActionsDiv.style.display = 'block';
+        messageDiv.innerHTML = `<p class="warning">La subida se ha interrumpido nuevamente debido al límite de tiempo. Puedes reanudarla haciendo clic en el botón "Reanudar subida".</p>`;
+      } else {
+        messageDiv.innerHTML = `<p class="error">Error al reanudar la subida: ${error}</p>`;
+      }
+    }
+    
+    isUploading = false;
+  });
+  
+  // Evento para cancelar la subida
+  cancelBtn.addEventListener('click', () => {
+    if (!currentUploadId) return;
+    
+    if (confirm('¿Estás seguro de que deseas cancelar esta subida? No podrás reanudarla más tarde.')) {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.status === 'success') {
+            messageDiv.innerHTML = `<p class="success">${result.message}</p>`;
+            
+            // Resetear el estado
+            currentUploadId = null;
+            currentFileName = null;
+            currentFileObject = null;
+            currentChunkIndex = 0;
+            currentTotalChunks = 0;
+            uploadActionsDiv.style.display = 'none';
+            progressContainer.style.display = 'none';
+            selectedFiles = [];
+            selectedFilesDiv.innerHTML = '';
+            uploadBtn.disabled = true;
+          } else {
+            messageDiv.innerHTML = `<p class="error">${result.message}</p>`;
+          }
+        })
+        .withFailureHandler(handleError)
+        .cancelUpload({
+          uploadId: currentUploadId
+        });
+    }
+  });
+  
+  // Función para subir archivos pequeños directamente
+  async function uploadSmallFile(file) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const fileName = file.name;
+        const contentType = file.type || 'application/octet-stream';
+        
+        // Leer todo el archivo como base64
+        const base64Data = await readFileAsBase64(file);
+        
+        // Subir el archivo directamente
+        statusDiv.textContent = `Subiendo ${fileName}...`;
+        progressBar.style.width = '50%';
+        
+        const result = await new Promise((resolveUpload, rejectUpload) => {
+          google.script.run
+            .withSuccessHandler(resolveUpload)
+            .withFailureHandler(rejectUpload)
+            .uploadFile({
+              bytes: base64Data,
+              fileName: fileName,
+              contentType: contentType
+            });
+        });
+        
+        if (result.status === 'error') {
+          throw new Error(result.message || 'Error al subir el archivo');
+        }
+        
+        // Actualizar la interfaz de usuario
+        statusDiv.textContent = `${fileName} subido correctamente`;
+        progressBar.style.width = '100%';
+        resolve(result);
+        
+      } catch (error) {
+        reject(error.message || error);
+      }
+    });
+  }
+  
+  // Función para leer un archivo como base64
+  function readFileAsBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        // Extraer la parte base64 (eliminar el prefijo "data:...")
+        const base64Data = e.target.result.split(',')[1];
+        resolve(base64Data);
+      };
+      reader.onerror = function() {
+        reject('Error al leer el archivo');
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+  
+  // Manejar errores
+  function handleError(error) {
+    const errorMsg = error && error.message ? error.message : (error || 'Error desconocido');
+    messageDiv.innerHTML = `<p class="error">Error: ${errorMsg}</p>`;
+    console.error('Error:', error);
+  }
+
+  // Añadir esta función para actualizar el estado de reanudación automática
+  function updateAutoResumeStatus() {
+    const autoResumeStatusDiv = document.getElementById('auto-resume-status');
+    if (autoResumeEnabled && autoResumeAttempts > 0) {
+      autoResumeStatusDiv.textContent = `Intento de reanudación automática ${autoResumeAttempts} de ${MAX_AUTO_RESUME_ATTEMPTS}`;
+    } else {
+      autoResumeStatusDiv.textContent = '';
+    }
+  }
+
+  // Función para finalizar la subida
+  function finalizeUpload() {
+    if (!currentUploadId) return;
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.status === 'success') {
+          messageDiv.innerHTML = `<p class="success">${result.message}</p>`;
+          uploadActionsDiv.style.display = 'none';
+          progressContainer.style.display = 'none';
+          loadFilesList();
+        } else {
+          messageDiv.innerHTML = `<p class="error">${result.message}</p>`;
+        }
+      })
+      .withFailureHandler(handleError)
+      .finalizeUpload({
+        uploadId: currentUploadId
+      });
+  }
+</script>
+</body>
+</html>
