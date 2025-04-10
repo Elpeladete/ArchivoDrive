@@ -209,6 +209,9 @@
           <button id="resume-btn" class="btn btn-warning">Reanudar subida</button>
           <button id="cancel-btn" class="btn btn-danger">Cancelar subida</button>
         </div>
+        <div id="finalize-btn-container" style="display: none; margin-top: 10px;">
+          <button id="finalize-btn" class="btn">Finalizar combinación manualmente</button>
+        </div>
       </div>
       
       <div id="message"></div>
@@ -240,6 +243,12 @@
     let autoResumeAttempts = 0;
     const MAX_AUTO_RESUME_ATTEMPTS = 50;
     const AUTO_RESUME_DELAY = 3000; // 3 segundos de espera antes de reanudar
+
+    // Variables de control para el reinicio automático de la combinación
+    let combinationTimerId = null;
+    let combinationRetryAttempts = 0;
+    const MAX_COMBINATION_RETRY_ATTEMPTS = 30;
+    const COMBINATION_RETRY_DELAY = 2000; // 2 segundos
     
     // Elementos DOM
     const uploadArea = document.getElementById('upload-area');
@@ -260,6 +269,8 @@
     const tabs = document.querySelectorAll('.tab');
     const tabContents = document.querySelectorAll('.tab-content');
     const autoResumeStatusDiv = document.getElementById('auto-resume-status');
+    const finalizeBtnContainer = document.getElementById('finalize-btn-container');
+    const finalizeBtn = document.getElementById('finalize-btn');
     
     // Inicialización
     window.onload = function() {
@@ -727,6 +738,20 @@
               break;
             }
           }
+
+          if (result.status === 'combine-continue') {
+            // La combinación se interrumpió por timeout pero necesita continuar
+            statusDiv.textContent = `Combinando fragmentos (${result.percentComplete}%)...`;
+            progressBar.style.width = `${result.percentComplete}%`;
+            messageDiv.innerHTML = `<p>La combinación está en progreso. Reiniciando automáticamente...</p>`;
+            
+            // Iniciar el proceso de continuación automática
+            combinationRetryAttempts = 1;
+            handleCombineContinueResponse(result);
+            
+            // No necesitamos resolver la promesa aún, el proceso continuará automáticamente
+            return;
+          }
           
           // Actualizar la barra de progreso
           progressBar.style.width = `${result.percentComplete}%`;
@@ -847,6 +872,13 @@
               throw 'timeout';
             }
           }
+
+          if (result.status === 'combine-continue') {
+            // La combinación se interrumpió pero necesita continuar
+            combinationRetryAttempts = 1;
+            handleCombineContinueResponse(result);
+            return;
+          }
           
           // Actualizar la barra de progreso
           progressBar.style.width = `${result.percentComplete}%`;
@@ -878,18 +910,32 @@
       // Configurar variables globales
       currentUploadId = result.uploadId;
       currentFileName = result.fileName;
-      currentChunkIndex = result.nextChunk;
       currentTotalChunks = result.totalChunks;
       
-      // Actualizar la interfaz
-      statusDiv.textContent = `Reanudando subida de "${currentFileName}" desde el fragmento ${currentChunkIndex + 1} de ${currentTotalChunks}`;
-      progressBar.style.width = `${Math.round((currentChunkIndex / currentTotalChunks) * 100)}%`;
-      
-      // Mostrar mensaje
-      messageDiv.innerHTML = `<p class="warning">Para continuar con la subida, necesitas seleccionar el mismo archivo "${currentFileName}" que estabas subiendo anteriormente.</p>`;
-      
-      // Solicitar al usuario que seleccione el archivo
-      fileInput.click();
+      // Verificar si estamos en el caso de todos los fragmentos subidos pero sin combinar
+      if (result.nextChunk >= result.totalChunks) {
+        // Todos los fragmentos ya están subidos, mostrar opción para finalizar
+        statusDiv.textContent = `Todos los fragmentos de "${result.fileName}" ya están subidos. Se requiere finalización manual.`;
+        progressBar.style.width = '95%';
+        messageDiv.innerHTML = `<p class="warning">La subida fue interrumpida durante la combinación de fragmentos. Haga clic en "Finalizar combinación manualmente" para completar el proceso.</p>`;
+        
+        // Mostrar botón de finalización en lugar de solicitar archivo
+        finalizeBtnContainer.style.display = 'block';
+        currentChunkIndex = result.totalChunks; // Marcar como completados todos los fragmentos
+      } else {
+        // Reanudación normal desde un fragmento específico
+        currentChunkIndex = result.nextChunk;
+        
+        // Actualizar la interfaz
+        statusDiv.textContent = `Reanudando subida de "${currentFileName}" desde el fragmento ${currentChunkIndex + 1} de ${currentTotalChunks}`;
+        progressBar.style.width = `${Math.round((currentChunkIndex / currentTotalChunks) * 100)}%`;
+        
+        // Mostrar mensaje
+        messageDiv.innerHTML = `<p class="warning">Para continuar con la subida, necesitas seleccionar el mismo archivo "${currentFileName}" que estabas subiendo anteriormente.</p>`;
+        
+        // Solicitar al usuario que seleccione el archivo
+        fileInput.click();
+      }
     } else {
       messageDiv.innerHTML = `<p class="error">${result.message || 'Error al reanudar la subida'}</p>`;
     }
@@ -897,7 +943,7 @@
   
   // Evento para reanudar la subida
   resumeBtn.addEventListener('click', async () => {
-    if (!currentUploadId || !currentFileObject) return;
+    if (!currentUploadId) return;
     
     try {
       uploadActionsDiv.style.display = 'none';
@@ -905,32 +951,72 @@
       isUploading = true;
       autoResumeAttempts = 0;
       
-      // Reanudar la subida desde el fragmento actual
-      await resumeChunkedUpload(currentFileObject, currentUploadId, currentChunkIndex, true);
-      
-      // Subida completada con éxito
-      messageDiv.innerHTML = '<p class="success">Archivo subido correctamente.</p>';
-      setTimeout(() => {
-        loadFilesList();
-      }, 1000);
-      
-      // Resetear el estado
-      currentUploadId = null;
-      currentFileName = null;
-      currentFileObject = null;
-      currentChunkIndex = 0;
-      currentTotalChunks = 0;
-      selectedFiles = [];
-      selectedFilesDiv.innerHTML = '';
-      uploadBtn.disabled = true;
-      
+      // Verificar si todos los fragmentos ya están subidos
+      if (currentChunkIndex >= currentTotalChunks) {
+        // Finalizar directamente en lugar de intentar subir más fragmentos
+        statusDiv.textContent = "Finalizando la subida...";
+        messageDiv.innerHTML = "<p>Combinando fragmentos. Este proceso puede tardar unos momentos...</p>";
+        
+        const result = await new Promise((resolveFinalize, rejectFinalize) => {
+          google.script.run
+            .withSuccessHandler(resolveFinalize)
+            .withFailureHandler(rejectFinalize)
+            .finalizeChunkedUpload({
+              uploadId: currentUploadId
+            });
+        });
+        
+        if (result.status === 'complete') {
+          statusDiv.textContent = `Archivo subido completamente`;
+          progressBar.style.width = '100%';
+          messageDiv.innerHTML = `<p class="success">Archivo subido exitosamente.</p>`;
+          setTimeout(() => {
+            loadFilesList();
+          }, 1000);
+          
+          // Resetear el estado
+          currentUploadId = null;
+          currentFileName = null;
+          currentFileObject = null;
+          currentChunkIndex = 0;
+          currentTotalChunks = 0;
+        } else if (result.status === 'combine-continue') {
+          handleCombineContinueResponse(result);
+        } else {
+          messageDiv.innerHTML = `<p class="error">${result.message || 'Error al finalizar la subida'}</p>`;
+          uploadActionsDiv.style.display = 'block';
+        }
+      } else if (currentFileObject) {
+        // Reanudar la subida desde el fragmento actual
+        await resumeChunkedUpload(currentFileObject, currentUploadId, currentChunkIndex, true);
+        
+        // Subida completada con éxito
+        messageDiv.innerHTML = '<p class="success">Archivo subido correctamente.</p>';
+        setTimeout(() => {
+          loadFilesList();
+        }, 1000);
+        
+        // Resetear el estado
+        currentUploadId = null;
+        currentFileName = null;
+        currentFileObject = null;
+        currentChunkIndex = 0;
+        currentTotalChunks = 0;
+      } else {
+        messageDiv.innerHTML = `<p class="error">No se ha seleccionado el archivo correcto para reanudar la subida.</p>`;
+        uploadActionsDiv.style.display = 'block';
+      }
     } catch (error) {
       if (error === 'timeout') {
         // La subida se interrumpió por tiempo, pero podemos reanudarla
         uploadActionsDiv.style.display = 'block';
         messageDiv.innerHTML = `<p class="warning">La subida se ha interrumpido nuevamente debido al límite de tiempo. Puedes reanudarla haciendo clic en el botón "Reanudar subida".</p>`;
+      } else if (error === 'combine-timeout') {
+        finalizeBtnContainer.style.display = 'block';
+        messageDiv.innerHTML = `<p class="warning">La combinación se ha interrumpido debido al límite de tiempo. Puedes finalizarla manualmente.</p>`;
       } else {
         messageDiv.innerHTML = `<p class="error">Error al reanudar la subida: ${error}</p>`;
+        uploadActionsDiv.style.display = 'block';
       }
     }
     
@@ -1042,23 +1128,130 @@
     }
   }
 
+  // Función para manejar la respuesta de combine-continue
+  function handleCombineContinueResponse(result) {
+    if (result.status === 'combine-continue') {
+      // La combinación se interrumpió por timeout pero necesita continuar
+      clearTimeout(combinationTimerId); // Limpiar cualquier temporizador existente
+      
+      // Mostrar información en la interfaz
+      statusDiv.textContent = `Combinando fragmentos (${result.percentComplete}%)...`;
+      progressBar.style.width = `${result.percentComplete}%`;
+      
+      // Incrementar contador de intentos
+      combinationRetryAttempts++;
+      
+      if (combinationRetryAttempts <= MAX_COMBINATION_RETRY_ATTEMPTS) {
+        messageDiv.innerHTML = `<p>La combinación está en progreso. Se han procesado ${result.lastProcessedChunk + 1} de ${result.totalChunks} fragmentos. Reiniciando automáticamente (intento ${combinationRetryAttempts} de ${MAX_COMBINATION_RETRY_ATTEMPTS})...</p>`;
+        
+        // Esperar antes de reintentar
+        combinationTimerId = setTimeout(() => {
+          // Guardar referencias para uso en la continuación
+          currentUploadId = result.uploadId;
+          
+          // Llamar a la función del servidor para continuar la combinación
+          google.script.run
+            .withSuccessHandler(function(continueResult) {
+              if (continueResult.status === 'complete') {
+                // La combinación se completó exitosamente
+                statusDiv.textContent = `Archivo subido completamente`;
+                progressBar.style.width = '100%';
+                messageDiv.innerHTML = `<p class="success">Archivo ${continueResult.fileName} subido exitosamente.</p>`;
+                finalizeBtnContainer.style.display = 'none';
+                combinationRetryAttempts = 0;
+                
+                // Resetear el estado
+                currentUploadId = null;
+                currentFileName = null;
+                currentFileObject = null;
+                currentChunkIndex = 0;
+                currentTotalChunks = 0;
+                
+                // Actualizar la lista de archivos
+                loadFilesList();
+              } else if (continueResult.status === 'combine-continue') {
+                // Sigue necesitando continuación
+                handleCombineContinueResponse(continueResult);
+              } else if (continueResult.status === 'combine-error' || continueResult.status === 'error') {
+                // Error en la combinación
+                statusDiv.textContent = `Error en la combinación`;
+                messageDiv.innerHTML = `<p class="error">${continueResult.message || 'Error durante la combinación de fragmentos'}</p>`;
+                finalizeBtnContainer.style.display = 'block'; // Mostrar botón para finalizar manualmente
+                combinationRetryAttempts = 0;
+              }
+            })
+            .withFailureHandler(function(error) {
+              statusDiv.textContent = `Error en la combinación`;
+              messageDiv.innerHTML = `<p class="error">Error: ${error.message || error || 'Error durante la combinación de fragmentos'}</p>`;
+              finalizeBtnContainer.style.display = 'block'; // Mostrar botón para finalizar manualmente
+              combinationRetryAttempts = 0;
+            })
+            .continueChunkCombination({
+              uploadId: result.uploadId
+            });
+        }, COMBINATION_RETRY_DELAY);
+        
+        return true; // Indicar que hemos manejado este estado
+      } else {
+        // Hemos alcanzado el máximo de intentos, mostrar opción manual
+        statusDiv.textContent = `La combinación necesita finalización manual`;
+        messageDiv.innerHTML = `<p class="warning">No se pudo completar la combinación automáticamente después de ${MAX_COMBINATION_RETRY_ATTEMPTS} intentos. Por favor, utilice el botón para finalizar manualmente.</p>`;
+        finalizeBtnContainer.style.display = 'block';
+        combinationRetryAttempts = 0; // Resetear contador para futuros intentos
+        return true;
+      }
+    }
+    
+    return false; // No es una respuesta de tipo combine-continue
+  }
+
   // Función para finalizar la subida
   function finalizeUpload() {
-    if (!currentUploadId) return;
-
+    if (!currentUploadId) {
+      messageDiv.innerHTML = '<p class="error">No se encontró una subida en progreso para finalizar.</p>';
+      return;
+    }
+    
+    // Mostrar interfaz de progreso durante la finalización
+    finalizeBtnContainer.style.display = 'none';
+    statusDiv.textContent = "Finalizando la subida...";
+    messageDiv.innerHTML = "<p>Combinando fragmentos finales. Este proceso puede tardar unos momentos...</p>";
+    
     google.script.run
       .withSuccessHandler(function(result) {
-        if (result.status === 'success') {
-          messageDiv.innerHTML = `<p class="success">${result.message}</p>`;
-          uploadActionsDiv.style.display = 'none';
-          progressContainer.style.display = 'none';
-          loadFilesList();
+        if (result.status === 'complete') {
+          // La finalización fue exitosa
+          statusDiv.textContent = `Archivo subido completamente`;
+          progressBar.style.width = '100%';
+          messageDiv.innerHTML = `<p class="success">Archivo ${result.fileName} subido exitosamente.</p>`;
+          
+          // Resetear el estado
+          currentUploadId = null;
+          currentFileName = null;
+          currentFileObject = null;
+          currentChunkIndex = 0;
+          currentTotalChunks = 0;
+          
+          // Actualizar la lista de archivos
+          setTimeout(() => {
+            loadFilesList();
+          }, 1000);
+        } else if (result.status === 'combine-continue') {
+          // La finalización necesita continuación, manejarla automáticamente
+          handleCombineContinueResponse(result);
         } else {
-          messageDiv.innerHTML = `<p class="error">${result.message}</p>`;
+          // Error en la finalización
+          statusDiv.textContent = `Error en la finalización`;
+          messageDiv.innerHTML = `<p class="error">${result.message || 'Error durante la finalización de la subida'}</p>`;
+          finalizeBtnContainer.style.display = 'block';
         }
       })
-      .withFailureHandler(handleError)
-      .finalizeUpload({
+      .withFailureHandler(function(error) {
+        statusDiv.textContent = `Error en la finalización`;
+        messageDiv.innerHTML = `<p class="error">Error: ${error.message || error || 'Error durante la finalización'}</p>`;
+        finalizeBtnContainer.style.display = 'block';
+      })
+      .finalizeChunkedUpload({
         uploadId: currentUploadId
       });
   }

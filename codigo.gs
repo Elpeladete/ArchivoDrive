@@ -128,6 +128,22 @@ function initOrResumeChunkedUpload(data) {
       // Obtener los datos de la subida
       const uploadInfo = JSON.parse(uploadData);
       
+      // Verificar si todos los fragmentos ya están subidos
+      const allChunksUploaded = uploadInfo.nextChunk >= uploadInfo.totalChunks;
+      
+      // Si es necesario combinar fragmentos (todos subidos pero no combinados)
+      if (allChunksUploaded && uploadInfo.isCombiningChunks) {
+        return {
+          status: 'resume',
+          uploadId: resumeUploadId,
+          nextChunk: uploadInfo.totalChunks, // Indicar que todos los fragmentos están listos
+          fileName: uploadInfo.fileName,
+          totalChunks: uploadInfo.totalChunks,
+          needsFinalization: true,
+          message: `Todos los fragmentos de "${uploadInfo.fileName}" han sido subidos. Es necesario finalizar la combinación.`
+        };
+      }
+      
       return {
         status: 'resume',
         uploadId: resumeUploadId,
@@ -341,11 +357,17 @@ function uploadChunk(data) {
  */
 function combineChunks(uploadId, isFinalAttempt, isAutoRetry) {
   try {
+    const startExecutionTime = new Date().getTime();
+    const SAFETY_MARGIN = 30000; // 30 segundos de margen de seguridad
+    const EFFECTIVE_MAX_TIME = MAX_EXECUTION_TIME - SAFETY_MARGIN;
+    
+    Logger.log(`[INFO] Iniciando combineChunks para uploadId: ${uploadId}, isFinalAttempt: ${isFinalAttempt}, isAutoRetry: ${isAutoRetry}`);
     const userProps = PropertiesService.getUserProperties();
     
     // Obtener la información de la subida
     const uploadDataStr = userProps.getProperty(uploadId);
     if (!uploadDataStr) {
+      Logger.log('[ERROR] Sesión de subida no encontrada o expirada');
       return {
         status: 'error',
         message: 'La sesión de subida no existe o ha expirado'
@@ -353,9 +375,11 @@ function combineChunks(uploadId, isFinalAttempt, isAutoRetry) {
     }
     
     const uploadInfo = JSON.parse(uploadDataStr);
+    Logger.log(`[INFO] Subida encontrada: ${uploadInfo.fileName}, ${uploadInfo.totalChunks} fragmentos`);
     
     // Verificar que tengamos todos los fragmentos
     if (!uploadInfo.chunkFiles || uploadInfo.chunkFiles.length !== uploadInfo.totalChunks) {
+      Logger.log(`[ERROR] Faltan fragmentos: ${uploadInfo.chunkFiles ? uploadInfo.chunkFiles.length : 0}/${uploadInfo.totalChunks}`);
       return {
         status: 'error',
         message: 'Faltan fragmentos para completar la subida'
@@ -378,104 +402,184 @@ function combineChunks(uploadId, isFinalAttempt, isAutoRetry) {
     // Guardar estado actualizado
     userProps.setProperty(uploadId, JSON.stringify(uploadInfo));
     
-    // Verificar tiempo de ejecución restante
-    const startTime = new Date().getTime();
-    const totalElapsedTime = startTime - uploadInfo.startTime;
+    // Determinar desde qué fragmento debemos comenzar (si es una continuación)
+    const startFromChunk = uploadInfo.lastProcessedChunk !== undefined ? uploadInfo.lastProcessedChunk + 1 : 0;
+    const sessionUrl = uploadInfo.sessionUrl;
+    let totalBytesSent = uploadInfo.bytesSent || 0;
     
-    // Si estamos cerca del límite de tiempo y no es el intento final, programar un reintento automático
-    if (totalElapsedTime > MAX_EXECUTION_TIME && !isFinalAttempt && uploadInfo.combineAttempts < 5) {
-      Logger.log('Tiempo de ejecución excedido, programando reintento automático: ' + uploadInfo.combineAttempts);
-      // Incrementar el contador de intentos para mantener seguimiento
-      uploadInfo.combineAttempts = (uploadInfo.combineAttempts || 0) + 1;
-      userProps.setProperty(uploadId, JSON.stringify(uploadInfo));
+    Logger.log(`[INFO] Comenzando desde fragmento ${startFromChunk}, bytes enviados: ${totalBytesSent}`);
+    
+    // Si no hay una sesión de carga resumible existente o estamos comenzando desde cero
+    let newSessionUrl = sessionUrl;
+    if (!newSessionUrl || startFromChunk === 0) {
+      // Iniciar una nueva sesión de carga resumible
+      Logger.log('[INFO] Iniciando nueva sesión de carga resumible');
       
-      return {
-        status: 'auto-combine',
-        uploadId: uploadId,
-        nextChunk: uploadInfo.totalChunks,
-        fileName: uploadInfo.fileName,
-        totalChunks: uploadInfo.totalChunks,
-        percentComplete: 99,
-        combineAttempts: uploadInfo.combineAttempts,
-        message: 'Combinando fragmentos automáticamente...'
-      };
-    } else if (totalElapsedTime > MAX_EXECUTION_TIME && !isFinalAttempt && uploadInfo.combineAttempts >= 5) {
-      // Después de varios intentos, sugerir finalización manual
-      return {
-        status: 'combine-timeout',
-        uploadId: uploadId,
-        nextChunk: uploadInfo.totalChunks,
-        fileName: uploadInfo.fileName,
-        totalChunks: uploadInfo.totalChunks,
-        percentComplete: 99,
-        message: 'Se alcanzó el límite de tiempo tras varios intentos. Por favor finalice manualmente.'
-      };
-    }
-    
-    // Registro para depuración
-    Logger.log('Combinando chunks para uploadId: ' + uploadId + ' con ' + uploadInfo.totalChunks + ' fragmentos');
-    
-    try {
-      // 1. Iniciar una carga resumible
       const fileMetadata = {
         name: uploadInfo.fileName,
         mimeType: uploadInfo.contentType,
         parents: [FOLDER_ID]
       };
       
-      Logger.log('Iniciando carga resumible para ' + uploadInfo.fileName);
-      
-      // Iniciar la sesión de carga resumible
-      const initiateResponse = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
-          'Content-Type': 'application/json; charset=UTF-8'
-        },
-        payload: JSON.stringify(fileMetadata),
-        muteHttpExceptions: true
-      });
-      
-      // Verificar respuesta de inicialización
-      if (initiateResponse.getResponseCode() !== 200) {
-        throw new Error('Error al iniciar la sesión de carga resumible: ' + initiateResponse.getContentText());
-      }
-      
-      // Obtener la URL de sesión de la respuesta
-      const sessionUrl = initiateResponse.getHeaders()['Location'];
-      if (!sessionUrl) {
-        throw new Error('No se recibió la URL de sesión para la carga resumible');
-      }
-      
-      Logger.log('URL de sesión obtenida correctamente');
-      
-      // 2. Subir cada fragmento a la ubicación correcta
-      let totalBytesSent = 0;
-      const totalSize = uploadInfo.fileSize;
-      
-      for (let i = 0; i < uploadInfo.totalChunks; i++) {
-        if (!uploadInfo.chunkFiles[i]) {
-          Logger.log('Fragmento ' + i + ' no encontrado, saltando');
-          continue;
+      try {
+        const initiateResponse = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
+            'Content-Type': 'application/json; charset=UTF-8'
+          },
+          payload: JSON.stringify(fileMetadata),
+          muteHttpExceptions: true
+        });
+        
+        if (initiateResponse.getResponseCode() !== 200) {
+          throw new Error('Error al iniciar sesión: ' + initiateResponse.getContentText());
         }
         
-        Logger.log('Procesando fragmento ' + (i+1) + ' de ' + uploadInfo.totalChunks);
+        newSessionUrl = initiateResponse.getHeaders()['Location'];
+        if (!newSessionUrl) {
+          throw new Error('No se recibió URL de sesión');
+        }
         
-        try {
-          const chunkFile = DriveApp.getFileById(uploadInfo.chunkFiles[i]);
-          const chunkBlob = chunkFile.getBlob();
-          const chunkBytes = chunkBlob.getBytes();
-          const chunkSize = chunkBytes.length;
+        // Guardar la URL de sesión para futuras continuaciones
+        uploadInfo.sessionUrl = newSessionUrl;
+        userProps.setProperty(uploadId, JSON.stringify(uploadInfo));
+        
+        Logger.log('[INFO] Nueva URL de sesión obtenida correctamente');
+      } catch (error) {
+        Logger.log(`[ERROR] Error al iniciar sesión: ${error.toString()}`);
+        return {
+          status: 'error',
+          message: 'Error al iniciar la sesión de carga: ' + error.toString()
+        };
+      }
+    }
+    
+    // Procesar fragmentos hasta que nos acerquemos al límite de tiempo
+    const totalSize = uploadInfo.fileSize;
+    for (let i = startFromChunk; i < uploadInfo.totalChunks; i++) {
+      // Verificar si estamos cerca del límite de tiempo
+      const currentTime = new Date().getTime();
+      const elapsedTime = currentTime - startExecutionTime;
+      
+      // Si estamos cerca del límite y no es el último fragmento, preparar para continuar en la próxima ejecución
+      if (elapsedTime > EFFECTIVE_MAX_TIME && i < uploadInfo.totalChunks - 1) {
+        Logger.log(`[WARN] Acercándose al límite de tiempo (${elapsedTime}ms). Pausando en fragmento ${i}`);
+        
+        // Actualizar el progreso para la próxima ejecución
+        uploadInfo.lastProcessedChunk = i - 1; // El último fragmento procesado completamente
+        uploadInfo.bytesSent = totalBytesSent;
+        uploadInfo.sessionUrl = newSessionUrl;
+        userProps.setProperty(uploadId, JSON.stringify(uploadInfo));
+        
+        return {
+          status: 'combine-continue',
+          uploadId: uploadId,
+          nextChunk: uploadInfo.totalChunks,
+          fileName: uploadInfo.fileName,
+          totalChunks: uploadInfo.totalChunks,
+          percentComplete: Math.round(((i) / uploadInfo.totalChunks) * 100),
+          lastProcessedChunk: i - 1,
+          message: `Combinando fragmentos. Procesados ${i} de ${uploadInfo.totalChunks}.`
+        };
+      }
+      
+      if (!uploadInfo.chunkFiles[i]) {
+        Logger.log(`[WARN] Fragmento ${i} no encontrado, saltando`);
+        continue;
+      }
+      
+      Logger.log(`[INFO] Procesando fragmento ${i+1} de ${uploadInfo.totalChunks}`);
+      
+      try {
+        const chunkFile = DriveApp.getFileById(uploadInfo.chunkFiles[i]);
+        const chunkBlob = chunkFile.getBlob();
+        const chunkBytes = chunkBlob.getBytes();
+        const chunkSize = chunkBytes.length;
+        
+        // Cálculo correcto del rango de bytes
+        const rangeStart = totalBytesSent;
+        
+        // Si es el último fragmento, asegurarse de que el rango termine exactamente en fileSize-1
+        if (i === uploadInfo.totalChunks - 1) {
+          const rangeEnd = uploadInfo.fileSize - 1;
+          const expectedLastChunkSize = uploadInfo.fileSize - totalBytesSent;
           
-          // Determinar el rango de bytes para este fragmento
-          const rangeStart = totalBytesSent;
-          const rangeEnd = Math.min(totalBytesSent + chunkSize - 1, totalSize - 1);
+          Logger.log(`[INFO] Último fragmento - Tamaño actual: ${chunkSize}, esperado: ${expectedLastChunkSize}`);
+          
+          // Si el tamaño del último fragmento no coincide con lo esperado, ajustarlo
+          if (chunkSize !== expectedLastChunkSize) {
+            Logger.log(`[WARN] Ajustando tamaño del último fragmento`);
+            
+            const contentRange = `bytes ${rangeStart}-${rangeEnd}/${uploadInfo.fileSize}`;
+            Logger.log(`[INFO] Rango final ajustado: ${contentRange}`);
+            
+            // Ajustar el tamaño del payload para el último fragmento
+            const adjustedBytes = new Array(expectedLastChunkSize);
+            const bytesToCopy = Math.min(chunkSize, expectedLastChunkSize);
+            
+            // Copiar solo los bytes necesarios del fragmento original
+            for (let j = 0; j < bytesToCopy; j++) {
+              adjustedBytes[j] = chunkBytes[j];
+            }
+            
+            // Enviar el fragmento con el tamaño ajustado
+            const uploadResponse = UrlFetchApp.fetch(newSessionUrl, {
+              method: 'PUT',
+              headers: {
+                'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
+                'Content-Range': contentRange
+              },
+              payload: adjustedBytes,
+              muteHttpExceptions: true
+            });
+            
+            const responseCode = uploadResponse.getResponseCode();
+            Logger.log(`[INFO] Último fragmento - Código de respuesta: ${responseCode}`);
+            
+            if (responseCode !== 200 && responseCode !== 201) {
+              throw new Error(`Error en el último fragmento: ${uploadResponse.getContentText()}`);
+            }
+            
+            // Procesar la respuesta exitosa del último fragmento
+            const fileData = JSON.parse(uploadResponse.getContentText());
+            return finalizeCombineProcess(uploadId, fileData, uploadInfo);
+            
+          } else {
+            // El tamaño coincide, continuar con la subida normal
+            const contentRange = `bytes ${rangeStart}-${rangeEnd}/${uploadInfo.fileSize}`;
+            Logger.log(`[INFO] Último fragmento - Rango: ${contentRange}`);
+            
+            const uploadResponse = UrlFetchApp.fetch(newSessionUrl, {
+              method: 'PUT',
+              headers: {
+                'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
+                'Content-Range': contentRange
+              },
+              payload: chunkBytes,
+              muteHttpExceptions: true
+            });
+            
+            const responseCode = uploadResponse.getResponseCode();
+            Logger.log(`[INFO] Último fragmento - Código de respuesta: ${responseCode}`);
+            
+            if (responseCode !== 200 && responseCode !== 201) {
+              throw new Error(`Error en el último fragmento: ${uploadResponse.getContentText()}`);
+            }
+            
+            // Procesar la respuesta exitosa del último fragmento
+            const fileData = JSON.parse(uploadResponse.getContentText());
+            return finalizeCombineProcess(uploadId, fileData, uploadInfo);
+          }
+        } else {
+          // Para fragmentos intermedios
+          const rangeEnd = Math.min(rangeStart + chunkSize - 1, totalSize - 1);
           const contentRange = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;
           
-          Logger.log(`Subiendo fragmento ${i+1}/${uploadInfo.totalChunks}, bytes ${rangeStart}-${rangeEnd}/${totalSize}`);
+          Logger.log(`[INFO] Fragmento ${i+1} - Rango: ${contentRange}`);
           
-          // Subir este fragmento
-          const uploadResponse = UrlFetchApp.fetch(sessionUrl, {
+          // Subir fragmento intermedio
+          const uploadResponse = UrlFetchApp.fetch(newSessionUrl, {
             method: 'PUT',
             headers: {
               'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
@@ -486,141 +590,107 @@ function combineChunks(uploadId, isFinalAttempt, isAutoRetry) {
           });
           
           const responseCode = uploadResponse.getResponseCode();
-          Logger.log(`Fragmento ${i+1} código de respuesta: ${responseCode}`);
+          Logger.log(`[INFO] Fragmento ${i+1} - Código de respuesta: ${responseCode}`);
           
-          // Si es el último fragmento, deberíamos recibir un código 200 o 201
-          if (i === uploadInfo.totalChunks - 1) {
-            if (responseCode !== 200 && responseCode !== 201) {
-              throw new Error('Error al finalizar la carga: ' + uploadResponse.getContentText());
-            }
-            
-            // El último fragmento debe devolver los metadatos del archivo
-            const fileData = JSON.parse(uploadResponse.getContentText());
-            Logger.log('Archivo combinado exitosamente: ' + fileData.id);
-            
-            // Limpiar todos los archivos temporales
-            Logger.log('Limpiando archivos temporales...');
-            for (let j = 0; j < uploadInfo.chunkFiles.length; j++) {
-              if (uploadInfo.chunkFiles[j]) {
-                try {
-                  DriveApp.getFileById(uploadInfo.chunkFiles[j]).setTrashed(true);
-                } catch (e) {
-                  Logger.log('Error al eliminar fragmento ' + j + ': ' + e.toString());
-                  // Continuar a pesar del error
-                }
-              }
-            }
-            
-            // Eliminar el archivo temporal inicial si existía
-            if (uploadInfo.tempFileId) {
-              try {
-                DriveApp.getFileById(uploadInfo.tempFileId).setTrashed(true);
-              } catch (e) {
-                Logger.log('Error al eliminar archivo temporal inicial: ' + e.toString());
-                // Continuar a pesar del error
-              }
-            }
-            
-            // Limpiar información de la subida
-            userProps.deleteProperty(uploadId);
-            
-            return {
-              status: 'complete',
-              fileId: fileData.id,
-              fileName: fileData.name,
-              fileUrl: `https://drive.google.com/file/d/${fileData.id}/view`,
-              message: 'Archivo subido completamente',
-              percentComplete: 100
-            };
-          } 
-          else if (responseCode !== 308) {
-            // Para fragmentos intermedios, esperamos un código 308 (Resume Incomplete)
-            throw new Error(`Error al subir fragmento ${i}: respuesta ${responseCode} ${uploadResponse.getContentText()}`);
+          // Para fragmentos intermedios, esperamos 308 (Resume Incomplete)
+          if (responseCode !== 308) {
+            throw new Error(`Error en fragmento ${i+1}: ${uploadResponse.getContentText()}`);
           }
           
-          // Actualizar el contador de bytes enviados
+          // Actualizar contadores y progreso
           totalBytesSent += chunkSize;
-          
-          // Actualizar estado de progreso para futuras referencias
           uploadInfo.lastProcessedChunk = i;
           uploadInfo.bytesSent = totalBytesSent;
           userProps.setProperty(uploadId, JSON.stringify(uploadInfo));
           
-        } catch (chunkError) {
-          Logger.log('Error al procesar fragmento ' + i + ': ' + chunkError.toString());
-          
-          // Si estamos en intento final, informar el error
-          if (isFinalAttempt) {
-            throw chunkError;
-          }
-          
-          // Si no es intento final, devolver estado de error para reintento
-          return {
-            status: 'combine-error',
-            uploadId: uploadId,
-            nextChunk: uploadInfo.totalChunks,
-            fileName: uploadInfo.fileName,
-            totalChunks: uploadInfo.totalChunks,
-            percentComplete: 99,
-            lastProcessedChunk: i,
-            message: 'Error al combinar fragmento ' + (i+1) + '. Intente finalizar manualmente.'
-          };
+          Logger.log(`[INFO] Fragmento ${i+1} procesado correctamente. Bytes enviados: ${totalBytesSent}`);
         }
-      }
-      
-      // No deberíamos llegar aquí, pero por si acaso
-      throw new Error('Error inesperado: no se completó la carga resumible');
-      
-    } catch (e) {
-      Logger.log('Error en la carga resumible: ' + e.toString());
-      
-      // Limpiar fragmentos temporales solo en caso de error fatal
-      if (isFinalAttempt) {
-        for (let i = 0; i < uploadInfo.chunkFiles.length; i++) {
-          if (uploadInfo.chunkFiles[i]) {
-            try {
-              DriveApp.getFileById(uploadInfo.chunkFiles[i]).setTrashed(true);
-            } catch (cleanupError) {
-              // Ignorar errores de limpieza
-              Logger.log('Error al limpiar fragmento ' + i + ': ' + cleanupError.toString());
-            }
-          }
+      } catch (error) {
+        Logger.log(`[ERROR] Error en fragmento ${i+1}: ${error.toString()}`);
+        
+        // Si es el intento final, propagar el error
+        if (isFinalAttempt) {
+          throw error;
         }
         
-        // Limpiar archivo temporal inicial
-        if (uploadInfo.tempFileId) {
-          try {
-            DriveApp.getFileById(uploadInfo.tempFileId).setTrashed(true);
-          } catch (cleanupError) {
-            // Ignorar errores de limpieza
-            Logger.log('Error al limpiar archivo temporal: ' + cleanupError.toString());
-          }
-        }
-        
-        // Limpiar información de la subida
-        userProps.deleteProperty(uploadId);
-      } else {
-        // En caso de error pero no en intento final, devolver estado para reintento
+        // Si no es intento final, guardar progreso para reanudar
         return {
           status: 'combine-error',
           uploadId: uploadId,
           nextChunk: uploadInfo.totalChunks,
           fileName: uploadInfo.fileName,
           totalChunks: uploadInfo.totalChunks,
-          percentComplete: 99,
-          message: 'Error al combinar fragmentos. Intente finalizar manualmente: ' + e.toString()
+          percentComplete: Math.round(((i) / uploadInfo.totalChunks) * 100),
+          lastProcessedChunk: i - 1,
+          message: `Error en fragmento ${i+1}. Intente finalizar manualmente.`
         };
       }
-      
-      throw new Error('Error en la carga resumible: ' + e.toString());
     }
+    
+    // No deberíamos llegar aquí, pero por si acaso
+    Logger.log('[WARN] Se llegó al final del bucle sin completar la subida');
+    return {
+      status: 'combine-error',
+      uploadId: uploadId,
+      message: 'No se pudo completar la subida por una razón inesperada'
+    };
+    
   } catch (error) {
-    Logger.log('Error en combineChunks: ' + error.toString());
+    Logger.log(`[ERROR] Error general en combineChunks: ${error.toString()}`);
     return {
       status: 'error',
       message: 'Error al combinar fragmentos: ' + error.toString()
     };
   }
+}
+
+/**
+ * Función auxiliar para finalizar el proceso de combinación
+ * @param {string} uploadId - ID de la sesión
+ * @param {Object} fileData - Datos del archivo creado
+ * @param {Object} uploadInfo - Información de la subida
+ * @return {Object} - Estado de la finalización
+ */
+function finalizeCombineProcess(uploadId, fileData, uploadInfo) {
+  const userProps = PropertiesService.getUserProperties();
+  
+  Logger.log(`[SUCCESS] Archivo ${fileData.name} combinado exitosamente: ${fileData.id}`);
+  
+  // Limpiar todos los archivos temporales
+  Logger.log('[INFO] Limpiando archivos temporales...');
+  for (let j = 0; j < uploadInfo.chunkFiles.length; j++) {
+    if (uploadInfo.chunkFiles[j]) {
+      try {
+        DriveApp.getFileById(uploadInfo.chunkFiles[j]).setTrashed(true);
+        Logger.log(`[DEBUG] Fragmento ${j+1} eliminado`);
+      } catch (e) {
+        Logger.log(`[WARN] Error al eliminar fragmento ${j+1}: ${e.toString()}`);
+      }
+    }
+  }
+  
+  // Eliminar el archivo temporal inicial si existía
+  if (uploadInfo.tempFileId) {
+    try {
+      DriveApp.getFileById(uploadInfo.tempFileId).setTrashed(true);
+      Logger.log('[DEBUG] Archivo temporal inicial eliminado');
+    } catch (e) {
+      Logger.log(`[WARN] Error al eliminar archivo temporal: ${e.toString()}`);
+    }
+  }
+  
+  // Limpiar información de la subida
+  userProps.deleteProperty(uploadId);
+  Logger.log('[INFO] Sesión limpiada de userProperties');
+  
+  return {
+    status: 'complete',
+    fileId: fileData.id,
+    fileName: fileData.name,
+    fileUrl: `https://drive.google.com/file/d/${fileData.id}/view`,
+    message: 'Archivo subido completamente',
+    percentComplete: 100
+  };
 }
 
 /**
@@ -732,6 +802,44 @@ function cancelUpload(data) {
     return {
       status: 'error',
       message: 'Error al cancelar la subida: ' + error.toString()
+    };
+  }
+}
+
+/**
+ * Continúa automáticamente una combinación que fue interrumpida por timeout
+ * @param {Object} data - Datos para continuar la combinación
+ * @return {Object} - Estado de la continuación
+ */
+function continueChunkCombination(data) {
+  try {
+    const { uploadId } = data;
+    
+    Logger.log(`[INFO] Reanudando combinación automáticamente para uploadId: ${uploadId}`);
+    const userProps = PropertiesService.getUserProperties();
+    
+    // Obtener la información de la subida
+    const uploadDataStr = userProps.getProperty(uploadId);
+    if (!uploadDataStr) {
+      Logger.log('[ERROR] Sesión de subida no encontrada al intentar continuar combinación');
+      return {
+        status: 'error',
+        message: 'La sesión de subida no existe o ha expirado'
+      };
+    }
+    
+    const uploadInfo = JSON.parse(uploadDataStr);
+    
+    // Registrar información del estado actual
+    Logger.log(`[INFO] Reanudando combinación desde fragmento ${uploadInfo.lastProcessedChunk + 1}, bytes enviados: ${uploadInfo.bytesSent}`);
+    
+    // Marcar esto como un reintento automático
+    return combineChunks(uploadId, false, true);
+  } catch (error) {
+    Logger.log(`[ERROR] Error en continueChunkCombination: ${error.toString()}`);
+    return {
+      status: 'error',
+      message: 'Error al continuar la combinación: ' + error.toString()
     };
   }
 }
